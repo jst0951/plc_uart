@@ -1,0 +1,174 @@
+library ieee;
+  use ieee.std_logic_1164.all;
+  use ieee.std_logic_arith.all;
+  use ieee.std_logic_unsigned.all;
+  
+entity plc_uart is
+  port(
+    nRst  : in std_logic;
+    clk   : in std_logic;
+    -- PLC INPUT
+    Y20   : in std_logic;
+    Y21   : in std_logic;
+    -- UART TX BUSY
+    busy  : in std_logic;
+    -- UART TX OUTPUT
+    tx_data  : out std_logic_vector(7 downto 0);
+    start_sig : out std_logic
+  );
+end plc_uart;
+
+architecture BEH of plc_uart is
+  -- state machine
+  type state_type is (IDLE, UART_SEND, UART_WAIT);
+  signal state : state_type;
+  -- memory table
+  type mem_tbl is array(0 to 13) of std_logic_vector(7 downto 0);
+  signal reg_tbl : mem_tbl;
+  -- rising/falling edge detection
+  signal Y20_d      : std_logic;
+  signal Y20_r_det  : std_logic;
+  signal Y20_f_det  : std_logic;
+  signal Y21_d      : std_logic;
+  signal Y21_r_det  : std_logic;
+  signal Y21_f_det  : std_logic;
+  signal busy_d     : std_logic; -- UART BUSY
+  signal busy_det   : std_logic;
+  -- uart data
+  signal data_C   : std_logic_vector(7 downto 0) := x"43";
+  signal data_Y   : std_logic_vector(7 downto 0) := x"59";
+  signal data_L   : std_logic_vector(7 downto 0) := x"4C";
+  signal data_udb : std_logic_vector(7 downto 0) := x"5F";
+  signal data_0   : std_logic_vector(7 downto 0) := x"30";
+  signal data_1   : std_logic_vector(7 downto 0) := x"31";
+  signal data_2   : std_logic_vector(7 downto 0) := x"32";
+  signal data_3   : std_logic_vector(7 downto 0) := x"33";
+  signal data_4   : std_logic_vector(7 downto 0) := x"34";
+  signal data_5   : std_logic_vector(7 downto 0) := x"35";
+  signal data_R   : std_logic_vector(7 downto 0) := x"52";
+  signal data_F   : std_logic_vector(7 downto 0) := x"46";
+  signal data_E   : std_logic_vector(7 downto 0) := x"45";
+  signal data_D   : std_logic_vector(7 downto 0) := x"44";
+  signal data_G   : std_logic_vector(7 downto 0) := x"47";
+  signal data_NULL: std_logic_vector(7 downto 0) := x"00";
+  -- uart data cnt
+  signal data_cnt : std_logic_vector(3 downto 0);
+  
+begin
+  -- rising/falling edge detection
+  process(nRst, clk)
+  begin
+    if(nRst = '0') then
+      Y20_d     <= '0';
+      Y20_r_det <= '0';
+      Y20_f_det <= '0';
+      Y21_d     <= '0';
+      Y21_r_det <= '0';
+      Y21_f_det <= '0';
+      busy_d    <= '0';
+      busy_det  <= '0';
+    elsif rising_edge(clk) then
+      Y20_d <= Y20;
+      Y21_d <= Y21;
+      busy_d  <= busy;
+      -- Y20
+      if(Y20_d = '0') and (Y20 = '1') then
+        Y20_r_det <= '1';
+      elsif(Y20_r_det = '1') and (reg_tbl(6) = data_0) and (reg_tbl(8) = data_R) then
+        Y20_r_det <= '0';
+      elsif(Y20_d = '1') and (Y20 = '0') then
+        Y20_f_det <= '1'; 
+      elsif(Y20_f_det = '1') and (reg_tbl(6) = data_0) and (reg_tbl(8) = data_F) then
+        Y20_f_det <= '0'; 
+      end if;
+      -- Y21
+      if(Y21_d = '0') and (Y21 = '1') then
+        Y21_r_det <= '1';
+      elsif(Y21_r_det = '1') and (reg_tbl(6) = data_1) and (reg_tbl(8) = data_R) then
+        Y21_r_det <= '0';
+      elsif(Y21_d = '1') and (Y21 = '0') then
+        Y21_f_det <= '1';
+      elsif(Y21_f_det = '1') and (reg_tbl(6) = data_1) and (reg_tbl(8) = data_F) then
+        Y21_f_det <= '0'; 
+      end if;
+      -- BUSY
+      if(busy_d = '0') and (busy = '1') then
+        busy_det <= '1';
+      else
+        busy_det <= '0';
+      end if;
+    end if;
+  end process;
+  
+  -- state machine
+  process(nRst, clk)
+    variable ADDR : natural;
+  begin
+    if (nRst = '0') then
+      -- uart base data setting
+      reg_tbl(0) <= data_C;
+      reg_tbl(1) <= data_Y;
+      reg_tbl(2) <= data_L;
+      reg_tbl(3) <= data_udb;
+      reg_tbl(4) <= data_Y;
+      reg_tbl(5) <= data_2;
+      reg_tbl(6) <= data_NULL; -- cylinder number goes here
+      reg_tbl(7) <= data_udb;
+      reg_tbl(8) <= data_NULL; -- rising/falling edge goes here
+      reg_tbl(9) <= data_udb;
+      reg_tbl(10)<= data_E;
+      reg_tbl(11)<= data_D;
+      reg_tbl(12)<= data_G;
+      reg_tbl(13)<= data_E;
+      -- state
+      state <= IDLE;
+      -- output
+      tx_data <= (others => '0');
+      start_sig <= '0';
+      -- output counter
+      data_cnt <= (others => '0');
+    elsif rising_edge(clk) then
+      case state is
+        when IDLE =>
+          if(Y20_r_det = '1') then
+            state <= UART_SEND;
+            reg_tbl(6) <= data_0; -- cylinder number
+            reg_tbl(8) <= data_R; -- rising edge
+          elsif(Y20_f_det = '1') then
+            state <= UART_SEND;
+            reg_tbl(6) <= data_0; -- cylinder number
+            reg_tbl(8) <= data_F; -- falling edge
+          elsif(Y21_r_det = '1') then
+            state <= UART_SEND;
+            reg_tbl(6) <= data_1; -- cylinder number
+            reg_tbl(8) <= data_R; -- rising edge
+          elsif(Y21_f_det = '1') then
+            state <= UART_SEND;
+            reg_tbl(6) <= data_1; -- cylinder number
+            reg_tbl(8) <= data_F; -- falling edge
+          end if;
+          tx_data <= (others => '0');
+          start_sig <= '0';
+          data_cnt <= (others => '0');        
+        when UART_SEND =>
+          state <= UART_WAIT;
+          ADDR  := conv_integer(data_cnt);
+          tx_data <= reg_tbl(ADDR);
+          start_sig <= '1';
+        when UART_WAIT =>
+          if(busy_det = '1') then
+            if(data_cnt = 13) then
+              data_cnt  <= (others => '0');
+              state     <= IDLE;
+            else
+              state <= UART_SEND;
+              data_cnt <= data_cnt + 1;
+            end if;
+          else
+            state <= UART_WAIT;
+          end if;
+          start_sig <= '0';
+      end case;
+    end if;
+  end process;
+end BEH;
